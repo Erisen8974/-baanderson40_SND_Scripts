@@ -247,6 +247,147 @@ exJobs2H = {
   [20] = {"GSM"},   --20:00-21:59
 }
 
+function GetCharacterCondition(cond)
+    return Svc.Condition[cond]
+end
+
+ALL_INVENTORIES = {
+    InventoryType.Inventory1,
+    InventoryType.Inventory2,
+    InventoryType.Inventory3,
+    InventoryType.Inventory4,
+}
+
+function is_busy()
+    return Player.IsBusy or GetCharacterCondition(6) or GetCharacterCondition(26) or GetCharacterCondition(27) or
+        GetCharacterCondition(45) or GetCharacterCondition(51) or GetCharacterCondition(32) or
+        not (GetCharacterCondition(1) or GetCharacterCondition(4)) or
+        (not IPC.vnavmesh.IsReady()) or IPC.vnavmesh.PathfindInProgress() or IPC.vnavmesh.IsRunning()
+end
+
+ice_started = false
+
+function set_ice(state)
+    if state then
+        yield("/ice start")
+        ice_started = true
+    else
+        yield("/ice stop")
+        ice_started = false
+    end
+end
+
+function wait(duration)
+    yield('/wait ' .. string.format("%.1f", duration))
+end
+
+function default(value, default_value)
+    if value == nil then return default_value end
+    return value
+end
+
+function wait_ready(max_wait, n_ready, stationary)
+    stationary = default(stationary, true)
+    n_ready = default(n_ready, 5)
+    local ready_count = 0
+    local p = Entity.Player.Position
+    repeat
+        wait(1)
+        if is_busy() or (stationary and Vector3.Distance(p, Entity.Player.Position) > 1) then
+            p = Entity.Player.Position
+            ready_count = 0
+        else
+            ready_count = ready_count + 1
+        end
+    until ready_count >= n_ready
+end
+
+function StopScript(message, caller, ...)
+    luanet.error(logify(message, ...))
+end
+
+function logify(first, ...)
+    local rest = table.pack(...)
+    local message = tostring(first)
+    for i = 1, rest.n do
+        message = message .. ' ' .. tostring(rest[i])
+    end
+    return message
+end
+
+function log(...)
+    Svc.Chat:Print(logify(...))
+end
+
+function put_cosmic_tools()
+    local min_tool = 49009
+    local max_tool = 49063
+    for _, source in ipairs(ALL_INVENTORIES) do
+        local sourceinv = Inventory.GetInventoryContainer(source)
+        if sourceinv == nil then
+            StopScript("No inventory", source)
+        else
+            for item in luanet.each(sourceinv.Items) do
+                if min_tool <= item.ItemId and item.ItemId <= max_tool then
+                    log("Moving", item.ItemId)
+                    item:MoveItemSlot(InventoryType.ArmoryMainHand)
+                    wait(0)
+                end
+            end
+        end
+    end
+end
+
+function CallerName(string)
+    string = default(string, true)
+    return debug_info_tostring(debug.getinfo(3), string)
+end
+
+function debug_info_tostring(debuginfo, always_string)
+    string = default(string, true)
+    local caller = debuginfo.name
+    if caller == nil and not always_string then
+        return nil
+    end
+    local file = debuginfo.short_src:gsub('.*\\', '') .. ":" .. debuginfo.currentline
+    return tostring(caller) .. "(" .. file .. ")"
+end
+
+function luminia_row_checked(table, id)
+    local sheet = Excel.GetSheet(table)
+    if sheet == nil then
+        StopScript("Unknown sheet", CallerName(false), "sheet not found for", table)
+    end
+    local row = sheet:GetRow(id)
+    if row == nil then
+        StopScript("Unknown id", CallerName(false), "Id not found in excel data", table, id)
+    end
+    return row
+end
+
+function equip_classjob(classjob_abrev, update_after)
+    log("Equiping:", classjob_abrev)
+    update_after = default(update_after, false)
+    classjob_abrev = classjob_abrev:upper()
+    for gs in luanet.each(Player.Gearsets) do
+        if luminia_row_checked("ClassJob", gs.ClassJob).Abbreviation == classjob_abrev then
+            gearset_name = gs.Name
+            repeat
+                put_cosmic_tools()
+                gs:Equip()
+                wait_ready(10, 1)
+            until Player.Gearset.Name == gearset_name
+            log("Equiped:", classjob_abrev, "with", gs.Name)
+            if update_after then
+                Player.Gearset:Update()
+            end
+            return true
+        end
+    end
+    log("No gearset for:", classjob_abrev)
+    return false
+end
+
 --Helper Funcitons
 function sleep(seconds)
     yield('/wait ' .. tostring(seconds))
@@ -347,35 +488,48 @@ function toNumber(s)
 end
 
 function RetrieveRelicResearch()
+    if IsAddonExists("WKSToolCustomize") then
+        repeat
+            yield("/callback WKSToolCustomize true -1")
+            sleep(.5)
+        until not IsAddonReady("WKSToolCustomize")
+        sleep(.5)
+    end
     if Svc.Condition[CharacterCondition.crafting]
        or Svc.Condition[CharacterCondition.gathering]
        or IsAddonExists("WKSMissionInfomation") then
-        if IsAddonExists("WKSToolCustomize") then
+        return 0
+    end
+    yield("/callback WKSHud true 15")
+    repeat
+        sleep(.1)
+    until IsAddonReady("WKSToolCustomize")
+    local res = inner_RetrieveRelicResearch()
+    if IsAddonExists("WKSToolCustomize") then
+        repeat
             yield("/callback WKSToolCustomize true -1")
-        end
-        return 0
+            sleep(.5)
+        until not IsAddonReady("WKSToolCustomize")
     end
-    if not IsAddonExists("WKSToolCustomize") and IsAddonExists("WKSHud") then
-        yield("/callback WKSHud true 15")
-        sleep(.25)
+    log("Relic Research:", res)
+    return res
+end
+
+function inner_RetrieveRelicResearch()
+    local ToolAddon = Addons.GetAddon("WKSToolCustomize")
+    local rows = {4, 41001, 41002, 41003, 41004, 41005, 41006, 41007}
+    local checked = 0
+    for _, row in ipairs(rows) do
+        local currentNode = ToolAddon:GetNode(1, 55, 68, row, 4, 5)
+        local requiredNode = ToolAddon:GetNode(1, 55, 68, row, 4, 7)
+        if not currentNode or not requiredNode then break end
+        local current  = toNumber(currentNode.Text)
+        local required = toNumber(requiredNode.Text)
+        if current == nil or required == nil then break end
+        if required == 0 then return 1 end --Relic complete
+        if current < required then return 0 end --Phase not done
+        checked = checked + 1
     end
-    if not IsAddonExists("WKSToolCustomize") then
-        return 0
-    end
-        local ToolAddon = Addons.GetAddon("WKSToolCustomize")
-        local rows = {4, 41001, 41002, 41003, 41004, 41005, 41006, 41007}
-        local checked = 0
-        for _, row in ipairs(rows) do
-            local currentNode = ToolAddon:GetNode(1, 55, 68, row, 4, 5)
-            local requiredNode = ToolAddon:GetNode(1, 55, 68, row, 4, 7)
-            if not currentNode or not requiredNode then break end
-            local current  = toNumber(currentNode.Text)
-            local required = toNumber(requiredNode.Text)
-            if current == nil or required == nil then break end
-            if required == 0 then return 1 end --Relic complete
-            if current < required then return 0 end --Phase not done
-            checked = checked + 1
-        end
     return (checked > 0) and 2 or 0  -- 2 = phase complete
 end
 
@@ -415,16 +569,17 @@ function ShouldJump()
 end
 
 function ShouldRelic()
-    if RetrieveRelicResearch() == 0 then
+    local research = RetrieveRelicResearch()
+    if research == 0 then
+        if not ice_started then
+            Dalamud.Log("[Cosmic Helper] Starting ICE")
+            set_ice(true)
+            sleep(2)
+            set_ice(true)
+        end
         return
-    elseif RetrieveRelicResearch() == 1 then
-        yield("/ice stop")
-        if IsAddonExists("WKSMission") then
-            yield("/callback WKSMission true -1")
-        end
-        if IsAddonExists("WKSToolCustomize") then
-            yield("/callback WKSToolCustomize true -1")
-        end
+    elseif research == 1 then
+        jobCount = jobCount + 1
         if jobCount == totalRelicJobs then
             Dalamud.Log("[Cosmic Helper] End of job list reached. Exiting script.")
             yield("/echo [Cosmic Helper] End of job list reached. Exiting script.")
@@ -433,13 +588,18 @@ function ShouldRelic()
         end
         Dalamud.Log("[Cosmic Helper] Swapping to -> " .. RelicJobsConfig[jobCount])
         yield("/echo [Cosmic Helper] Swapping to -> " .. RelicJobsConfig[jobCount])
-        yield("/equipjob " .. RelicJobsConfig[jobCount])
-        sleep(1)
-        Dalamud.Log("[Cosmic Helper] Starting ICE")
-        yield("/ice start")
-        jobCount = jobCount + 1
+        local waitcount = 0
+        while IsAddonReady("WKSMissionInfomation") do
+            sleep(.1)
+            waitcount = waitcount + 1
+            if waitcount % 50 == 1 then
+                Dalamud.Log("[Cosmic Helper] Waiting for mission to swap")
+            end
+        end
+        set_ice(false)
+        equip_classjob(RelicJobsConfig[jobCount])
         return
-    elseif RetrieveRelicResearch() == 2 then
+    elseif research == 2 then
         if not IPC.TextAdvance.IsEnabled() then
             yield("/at enable")
             EnabledAutoText = true
@@ -457,7 +617,7 @@ function ShouldRelic()
             end
         end
         Dalamud.Log("[Cosmic Helper] Stopping ICE")
-        yield("/ice stop")
+        set_ice(false)
         curPos = Svc.ClientState.LocalPlayer.Position
         if Svc.ClientState.TerritoryType == SinusTerritory then
             if DistanceBetweenPositions(curPos, SinusGateHub) > 75 then
@@ -504,41 +664,30 @@ function ShouldRelic()
         end
         CurJob = Player.Job
         sleep(.1)
-        if AltJobConfig then yield("/equipjob war") end
+        if AltJobConfig then equip_classjob("war") end
         local e = Entity.GetEntityByName(SinusResearchNpc.name)
         if e then
             Dalamud.Log("[Cosmic Helper] Targetting: " .. SinusResearchNpc.name)
             e:SetAsTarget()
-        end
-        if Entity.Target and Entity.Target.Name == SinusResearchNpc.name then
-            Dalamud.Log("[Cosmic Helper] Interacting: " .. SinusResearchNpc.name)
             Entity.Target:Interact()
-            sleep(1)
         end
         while not IsAddonReady("SelectString") do
-            sleep(1)
+            sleep(.1)
         end
-        if IsAddonReady("SelectString") then
-            yield("/callback SelectString true 0")
-            sleep(1)
-        end
+        yield("/callback SelectString true 0")
         while not IsAddonReady("SelectIconString") do
-            sleep(1)
+            sleep(.1)
         end
-        if IsAddonReady("SelectIconString") then
-            StringId = CurJob.Id - 8
-            yield("/callback SelectIconString true " .. StringId)
-        end
+        StringId = CurJob.Id - 8
+        yield("/callback SelectIconString true " .. StringId)
         while not IsAddonReady("SelectYesno") do
-            sleep(1)
+            sleep(.1)
         end
-        if IsAddonReady("SelectYesno") then
-            yield("/callback SelectYesno true 0")
+        yield("/callback SelectYesno true 0")
+        while IsAddonReady("SelectYesno") do
+            sleep(.1)
         end
-        while IsAddonExists("SelectYesno") do
-            sleep(1)
-        end
-        if AltJobConfig then yield("/equipjob " .. CurJob.Name) end
+        if AltJobConfig then equip_classjob(CurJob.Abbreviation, true) end
         if CurJob.IsCrafter then
             aroundSpot = GetRandomSpotAround(spotRadius, minRadius)
             IPC.vnavmesh.PathfindAndMoveTo(aroundSpot, false)
@@ -559,10 +708,6 @@ function ShouldRelic()
             yield("/at disable")
             EnabledAutoText = false
         end
-        Dalamud.Log("[Cosmic Helper] Starting ICE")
-        yield("/ice start")
-        sleep(2)
-        yield("/ice start")
     end
 end
 
@@ -579,7 +724,7 @@ function ShouldRetainer()
             end
         end
         Dalamud.Log("[Cosmic Helper] Stopping ICE")
-        yield("/ice stop")
+        set_ice(false)
         if SelectedBell.zone == "Moongate Hub (Sinus)" then
             curPos = Svc.ClientState.LocalPlayer.Position
             if DistanceBetweenPositions(curPos, SinusGateHub) > 75 then
@@ -661,9 +806,9 @@ function ShouldRetainer()
                 end
             end
             Dalamud.Log("[Cosmic Helper] Start ICE")
-            yield("/ice start")
+            set_ice(true)
             sleep(2)
-            yield("/ice start")
+            set_ice(true)
             return
         elseif Svc.ClientState.TerritoryType == PhaennaTerritory then
             aroundSpot = GetRandomSpotAround(spotRadius, minRadius)
@@ -680,9 +825,9 @@ function ShouldRetainer()
                 end
             end
             Dalamud.Log("[Cosmic Helper] Start ICE")
-            yield("/ice start")
+            set_ice(true)
             sleep(2)
-            yield("/ice start")
+            set_ice(true)
             return
         else
             Dalamud.Log("[Cosmic Helper] Teleport to Cosmic")
@@ -719,9 +864,9 @@ function ShouldRetainer()
                 sleep(.5)
             end
             Dalamud.Log("[Cosmic Helper] Start ICE")
-            yield("/ice start")
+            set_ice(true)
             sleep(2)
-            yield("/ice start")
+            set_ice(true)
         end
     end
 end
@@ -828,31 +973,43 @@ function ShouldCredit()
                 EnabledAutoText = false
             end
             Dalamud.Log("[Cosmic Helper] Starting ICE")
-            yield("/ice start")
+            set_ice(true)
             sleep(2)
-            yield("/ice start")
+            set_ice(true)
         end
     end
 end
 
+wasntCrafting = 0
+
 function ShouldReport()
     curJob = Player.Job
-    while IsAddonExists("WKSMissionInfomation") and curJob.IsCrafter do
-        while IsAddonExists("WKSRecipeNotebook") and Svc.Condition[CharacterCondition.normalConditions] do
+    if IsAddonExists("WKSMissionInfomation") and curJob.IsCrafter then
+        wasntCrafting = 0
+        if IsAddonExists("WKSRecipeNotebook") and Svc.Condition[CharacterCondition.normalConditions] then
             reportCount = reportCount + 1
-            if reportCount >= 5 then
-                yield("/callback WKSMissionInfomation true 11")
-                Dalamud.Log("[Cosmic Helper] Reporting failed mission.")
-                yield("/echo [Cosmic Helper] Reporting failed mission.")
-                reportCount = 0
+            if reportCount >= 20 then
+                while IsAddonExists("WKSRecipeNotebook") and Svc.Condition[CharacterCondition.normalConditions] do
+                    set_ice(false)
+                    yield("/callback WKSMissionInfomation true 11")
+                    Dalamud.Log("[Cosmic Helper] Reporting failed mission.")
+                    yield("/echo [Cosmic Helper] Reporting failed mission.")
+                end
             end
             sleep(1)
+        else
+            reportCount = 0
+            sleep(1)
         end
+    else
+        wasntCrafting = wasntCrafting + 1
         reportCount = 0
-        sleep(.1)
+        sleep(1)
     end
-    if Ex4TimeConfig or Ex2TimeConfig then
-        ShouldExTime()
+    if wasntCrafting >= 10 and wasntCrafting%10 == 0 then
+        set_ice(false)
+        sleep(2)
+        set_ice(true)
     end
 end
 
@@ -872,12 +1029,12 @@ function ShouldExTime()
                 end
             end
             Dalamud.Log("[Cosmic Helper] Stopping ICE")
-            yield("/ice stop")
+            set_ice(false)
             sleep(1)
             yield("/echo Current EX+ time: " .. getEorzeaHour() .. " swapping to " .. Cur4ExJob)
-            yield("/equipjob " .. Cur4ExJob)
+            equip_classjob(Cur4ExJob)
             sleep(1)
-            yield("/ice start")
+            set_ice(true)
             Dalamud.Log("[Cosmic Helper] Starting ICE")
         end
     elseif Ex2TimeConfig then
@@ -894,12 +1051,12 @@ function ShouldExTime()
                 end
             end
             Dalamud.Log("[Cosmic Helper] Stopping ICE")
-            yield("/ice stop")
+            set_ice(false)
             sleep(1)
             yield("/echo Current EX+ time: " .. getEorzeaHour() .. " swapping to " .. Cur2ExJob)
-            yield("/equipjob " .. Cur2ExJob)
+            equip_classjob(Cur2ExJob)
             sleep(1)
-            yield("/ice start")
+            set_ice(true)
             Dalamud.Log("[Cosmic Helper] Starting ICE")
         end
     end
@@ -929,7 +1086,7 @@ function ShouldMove()
             end
         end
         Dalamud.Log("[Cosmic Helper] Stopping ICE")
-        yield("/ice stop")
+        set_ice(false)
         curPos = Svc.ClientState.LocalPlayer.Position
         if Svc.ClientState.TerritoryType == SinusTerritory then
             if DistanceBetweenPositions(curPos, SinusGateHub) > 75 then
@@ -960,7 +1117,7 @@ function ShouldMove()
                 break
             end
         end
-        yield("/ice start")
+        set_ice(true)
         Dalamud.Log("[Cosmic Helper] Starting ICE")
         lastMoveTime = os.time()
         offSet = nil
@@ -995,51 +1152,35 @@ function ShouldCycle()
         end
         Dalamud.Log("[Cosmic Helper] Swapping to -> " .. JobsConfig[jobCount])
         yield("/echo [Cosmic Helper] Swapping to -> " .. JobsConfig[jobCount])
-        yield("/equipjob " .. JobsConfig[jobCount])
+        equip_classjob(JobsConfig[jobCount])
         sleep(2)
         Dalamud.Log("[Cosmic Helper] Starting ICE")
-        yield("/ice start")
+        set_ice(true)
         jobCount = jobCount + 1
         cycleCount = 0
     end
 end
 
-yield("/echo Cosmic Helper started!")
-yield("/ice start")
 
 --Plugin Check
-if JobsConfig.Count > 0 and not HasPlugin("SimpleTweaksPlugin") then
-    yield("/echo [Cosmic Helper] Cycling jobs requires SimpleTweaks plugin. Script will continue without changing jobs.")
-    JobsConfig = nil
-end
-if LimitConfig > 0 and not HasPlugin("TextAdvance") then
-    yield("/echo [Cosmic Helper] Lunar Credit spending for Gamba requires TextAdvance plugin. Script will continue without playing Gamba.")
-    LimitConfig = 0
-end
-if ResearchConfig and not HasPlugin("TextAdvance") then
-    yield("/echo [Cosmic Helper] Research turnin requires TextAdvance plugin. Script will continue without turning in research for relics.")
-    ResearchConfig = 0
-end
-if RetainerConfig ~= "N/A" and not HasPlugin("AutoRetainer") then
-    yield("/echo [Cosmic Helper] Retainer processing requires AutoRetainer plugin. Script will continue without processing retainers.")
-    RetainerConfig = "N/A"
-end
 local job = Player.Job
 if not job.IsCrafter and MoveConfig > 0 then
     yield("/echo [Cosmic Helper] Only crafters should move. Script will continue.")
     MoveConfig = 0
-end
-if RelicJobsConfig.Count > 0 and not HasPlugin("SimpleTweaksPlugin") then
-    yield("/echo [Cosmic Helper] Cycling jobs requires SimpleTweaks plugin. Script will continue without changing jobs.")
-    RelicJobsConfig = nil
 end
 if Ex4TimeConfig and Ex2TimeConfig then
     yield("/echo [Cosmic Helper] Having both EX+ timed missions enabled is not supported. The script will continue with only doing the EX+ 4HR missions.")
     Ex2TimeConfig = false
 end
 
---Enable plugin options
-yield("/tweaks enable EquipJobCommand true")
+log(ResearchConfig, RelicJobsConfig.Count)
+
+if ResearchConfig then
+    log("Starting with class", RelicJobsConfig[0])
+    equip_classjob(RelicJobsConfig[0])
+end
+
+yield("/echo Cosmic Helper started!")
 
 --Main Loop
 while Run_script do
