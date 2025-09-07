@@ -997,6 +997,7 @@ function ShouldReport()
                     Dalamud.Log("[Cosmic Helper] Reporting failed mission.")
                     yield("/echo [Cosmic Helper] Reporting failed mission.")
                 end
+                reportCount = 0
             end
             sleep(1)
         else
