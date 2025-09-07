@@ -671,7 +671,7 @@ function ShouldRelic()
         if e then
             Dalamud.Log("[Cosmic Helper] Targetting: " .. SinusResearchNpc.name)
             e:SetAsTarget()
-            Entity.Target:Interact()
+            e:Interact()
         end
         while not IsAddonReady("SelectString") do
             sleep(.1)
