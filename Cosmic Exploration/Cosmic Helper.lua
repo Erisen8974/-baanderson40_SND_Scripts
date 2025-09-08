@@ -116,7 +116,7 @@ import("System.Numerics") -- leave this alone....
 ]]
 
 
-loopDelay  = .1           -- Controls how fast the script runs; lower = faster, higher = slower (in seconds per loop)
+loopDelay  =  1           -- Controls how fast the script runs; lower = faster, higher = slower (in seconds per loop)
 cycleLoops = 100          -- How many loop iterations to run before cycling to the next job
 moveOffSet = 5            -- Adds a random offset to spot movement time, up to ±5 minutes.
 spotRadius = 3            -- Defines the movement radius; the player will move within this distance when selecting a new spot
@@ -988,9 +988,9 @@ function ShouldReport()
     curJob = Player.Job
     if IsAddonExists("WKSMissionInfomation") and curJob.IsCrafter then
         wasntCrafting = 0
-        if IsAddonExists("WKSRecipeNotebook") and Svc.Condition[CharacterCondition.normalConditions] then
+        if IsAddonExists("WKSRecipeNotebook") and Svc.Condition[CharacterCondition.normalConditions] and not IsAddonExists("Materialize") then
             reportCount = reportCount + 1
-            if reportCount >= 20 then
+            if reportCount >= 10 then
                 while IsAddonExists("WKSRecipeNotebook") and Svc.Condition[CharacterCondition.normalConditions] do
                     set_ice(false)
                     yield("/callback WKSMissionInfomation true 11")
@@ -999,15 +999,12 @@ function ShouldReport()
                 end
                 reportCount = 0
             end
-            sleep(1)
         else
             reportCount = 0
-            sleep(1)
         end
     else
         wasntCrafting = wasntCrafting + 1
         reportCount = 0
-        sleep(1)
     end
     if wasntCrafting >= 10 and wasntCrafting%10 == 0 then
         set_ice(false)
@@ -1025,10 +1022,11 @@ function ShouldExTime()
             while IsAddonExists("WKSMissionInfomation") do
                 sleep(.1)
                 waitcount = waitcount + 1
-                if waitcount >= 50 then
+                if waitcount >= 10 then
                     Dalamud.Log("[Cosmic Helper] Waiting for mission to end to swap to EX+ job.")
                     yield("/echo [Cosmic Helper] Waiting for mission to end to swap to EX+ job.")
                     waitcount = 0
+                    ShouldReport()
                 end
             end
             Dalamud.Log("[Cosmic Helper] Stopping ICE")
@@ -1175,8 +1173,6 @@ if Ex4TimeConfig and Ex2TimeConfig then
     yield("/echo [Cosmic Helper] Having both EX+ timed missions enabled is not supported. The script will continue with only doing the EX+ 4HR missions.")
     Ex2TimeConfig = false
 end
-
-log(ResearchConfig, RelicJobsConfig.Count)
 
 if ResearchConfig then
     log("Starting with class", RelicJobsConfig[0])
